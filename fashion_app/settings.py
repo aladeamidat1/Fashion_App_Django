@@ -230,3 +230,10 @@ CORS_ALLOWED_ORIGINS = [
 
 CORS_ALLOW_CREDENTIALS = True
 
+# AI Measurement Service Configuration
+AI_MEASUREMENT_SERVICE_URL = os.getenv(
+    'AI_MEASUREMENT_SERVICE_URL', 
+    'http://localhost:8001/api/v1'
+)
+AI_SERVICE_TIMEOUT = int(os.getenv('AI_SERVICE_TIMEOUT', '30'))
+

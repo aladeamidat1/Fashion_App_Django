@@ -13,6 +13,11 @@ urlpatterns = [
     # Quick measurement entry
     path('quick-entry/', views.quick_measurement_entry, name='quick_measurement_entry'),
     
+    # AI Measurement endpoints
+    path('ai/extract/', views.ai_extract_measurements, name='ai_extract_measurements'),
+    path('ai/status/', views.ai_service_status, name='ai_service_status'),
+    path('<int:measurement_id>/validate/', views.validate_ai_measurement, name='validate_ai_measurement'),
+    
     # Designer-Customer relationships
     path('relationships/', views.DesignerCustomerRelationshipListCreateView.as_view(), name='relationship_list_create'),
     path('relationships/<int:pk>/', views.DesignerCustomerRelationshipDetailView.as_view(), name='relationship_detail'),

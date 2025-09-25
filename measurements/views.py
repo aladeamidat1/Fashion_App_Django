@@ -5,8 +5,10 @@ from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from django.db.models import Q
+from django.conf import settings
 
 from .models import Measurement, MeasurementHistory, DesignerCustomerRelationship
+from .services import ai_measurement_service
 from .serializers import (
     MeasurementCreateSerializer,
     MeasurementDetailSerializer,
@@ -372,3 +374,154 @@ def available_designers(request):
         'available_designers': designers_data,
         'count': len(designers_data)
     })
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def ai_extract_measurements(request):
+    """
+    Extract measurements from uploaded image using AI service
+    """
+    if not request.user.is_Designer:
+        return Response(
+            {'error': 'Only designers can extract AI measurements'}, 
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    try:
+        # Get request data
+        image_data = request.data.get('image_data')
+        image_type = request.data.get('image_type', 'image/jpeg')
+        customer_id = request.data.get('customer_id')
+        reference_height = request.data.get('reference_height')
+        
+        if not image_data:
+            return Response(
+                {'error': 'image_data is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not customer_id:
+            return Response(
+                {'error': 'customer_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get customer
+        try:
+            customer = User.objects.get(id=customer_id, is_Customer=True)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Customer not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Call AI service
+        ai_result = ai_measurement_service.extract_measurements_from_image(
+            image_data=image_data,
+            image_type=image_type,
+            customer_id=customer_id,
+            reference_height=reference_height
+        )
+        
+        if not ai_result.get('success', False):
+            return Response({
+                'success': False,
+                'error': ai_result.get('error', 'AI measurement extraction failed'),
+                'ai_response': ai_result
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create measurement from AI results
+        measurement, errors = ai_measurement_service.create_measurement_from_ai_result(
+            ai_result=ai_result,
+            customer=customer,
+            designer=request.user
+        )
+        
+        if not measurement:
+            return Response({
+                'success': False,
+                'errors': errors,
+                'ai_response': ai_result
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate against manual measurements if available
+        validation_result = ai_measurement_service.validate_ai_measurements(
+            measurement=measurement,
+            ai_result=ai_result
+        )
+        
+        # Serialize the result
+        measurement_data = MeasurementDetailSerializer(measurement).data
+        
+        return Response({
+            'success': True,
+            'measurement': measurement_data,
+            'ai_metadata': {
+                'processing_time': ai_result.get('processing_time', 0),
+                'pose_confidence': ai_result.get('pose_detection_confidence', 0),
+                'overall_accuracy': ai_result.get('overall_accuracy', 0),
+                'measurements_extracted': len(ai_result.get('measurements', [])),
+                'recommendations': ai_result.get('recommendations', [])
+            },
+            'validation': validation_result,
+            'errors': errors
+        }, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        return Response(
+            {'error': f'Unexpected error: {str(e)}'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def ai_service_status(request):
+    """
+    Check AI measurement service status
+    """
+    health_status = ai_measurement_service.check_ai_service_health()
+    
+    return Response({
+        'ai_service': health_status,
+        'integration_configured': hasattr(settings, 'AI_MEASUREMENT_SERVICE_URL'),
+        'service_url': getattr(settings, 'AI_MEASUREMENT_SERVICE_URL', 'Not configured')
+    })
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def validate_ai_measurement(request, measurement_id):
+    """
+    Validate an AI-generated measurement against manual measurements
+    """
+    try:
+        measurement = get_object_or_404(Measurement, id=measurement_id)
+        
+        # Check permissions
+        if not (measurement.designer == request.user or measurement.customer == request.user):
+            return Response(
+                {'error': 'Permission denied'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if measurement.measurement_type != 'ai_generated':
+            return Response(
+                {'error': 'This measurement was not AI-generated'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Perform validation
+        validation_result = ai_measurement_service.validate_ai_measurements(
+            measurement=measurement,
+            ai_result={}  # We don't have the original AI result stored
+        )
+        
+        return Response(validation_result)
+        
+    except Exception as e:
+        return Response(
+            {'error': f'Validation error: {str(e)}'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
